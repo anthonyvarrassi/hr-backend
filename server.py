@@ -213,6 +213,7 @@ def pitcher(pid):
     era   = round(float(s.get("era","0") or 0), 2)
     whip  = round(float(s.get("whip","0") or 0), 2)
     go_ao = float(s.get("groundOutsToAirouts",1.0) or 1.0)
+    games = int(s.get("gamesPitched",0))
 
     gb_pct     = round(go_ao/(1+go_ao), 4)
     hrfb_pct   = round(min(0.35, hr/max(1,ip*(1-gb_pct)*3)), 4)
@@ -226,7 +227,7 @@ def pitcher(pid):
     if sv_bar: barrel_pct = sv_bar
 
     result = {
-        "IP":ip,"HR":hr,"BB":bb,"K":ks,"ERA":era,"WHIP":whip,
+        "G":games,"IP":ip,"HR":hr,"BB":bb,"K":ks,"ERA":era,"WHIP":whip,
         "HR_FB_pct":hrfb_pct,"GB_pct":gb_pct,"FIP":fip,
         "Hand":hand,"Barrel_pct":barrel_pct,
         "small_sample":ip<20,"season_used":season,
