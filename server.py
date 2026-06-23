@@ -687,7 +687,6 @@ NFL_TEAMS_MAP = {
 
 def claude_stats(prompt):
     """Call Claude API for player stats. Returns parsed JSON dict."""
-    import os
     api_key = os.environ.get("ANTHROPIC_API_KEY","")
     r = requests.post(
         "https://api.anthropic.com/v1/messages",
@@ -698,7 +697,15 @@ def claude_stats(prompt):
               "messages": [{"role": "user", "content": prompt}]},
         timeout=15
     )
-    txt = r.json()["content"][0]["text"].replace("```json","").replace("```","").strip()
+    data = r.json()
+    # Handle both content array and direct text response
+    if "content" in data and isinstance(data["content"], list):
+        txt = data["content"][0].get("text","")
+    elif "content" in data and isinstance(data["content"], str):
+        txt = data["content"]
+    else:
+        raise ValueError(f"Unexpected API response: {list(data.keys())}")
+    txt = txt.replace("```json","").replace("```","").strip()
     return json.loads(txt)
 
 
