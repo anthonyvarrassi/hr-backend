@@ -615,49 +615,41 @@ def search_nfl_player(name):
     cached = cget(ck)
     if cached: return cached
     try:
-        results = []
-
         # ESPN search API
         data = nfl_get("https://site.api.espn.com/apis/search/v2",
                        {"query": name, "sport": "football",
                         "league": "nfl", "limit": 10})
-        raw = []
-        for h in data.get("results", []):
-            if h.get("type") != "athlete":
-                continue
-            raw.append({"id": h.get("id",""),
-                        "name": h.get("displayName","") or h.get("name","")})
+        raw = [h for h in data.get("results", []) if h.get("type") == "athlete"]
 
-        # Enrich each result with position + team from athlete endpoint
-        # Only fetch first 5 to keep it fast
-        for r in raw[:5]:
-            pid = r["id"]
+        if not raw:
+            raise ValueError(f"No NFL player found for '{name}'. Check spelling (First Last).")
+
+        results = []
+        NON_SKILL = {"QB","K","P","LS","CB","S","LB","DE","DT","OT","OG","C","NT","DL","OL","DB","ILB","OLB","SS","FS"}
+
+        for r in raw[:6]:
+            pid = r.get("id","")
+            pname = r.get("displayName","") or r.get("name","")
+            pos, team = "", ""
             try:
-                ath = nfl_get(f"{NFL_BASE}/athletes/{pid}")
-                a   = ath.get("athlete", {})
-                pos = a.get("position", {}).get("abbreviation","") if isinstance(a.get("position"),dict) else ""
-                team= a.get("team", {}).get("abbreviation","")     if isinstance(a.get("team"),dict)     else ""
-                active = a.get("active", True)
-                # Skip non-skill positions and inactive players with no team
-                if pos.upper() in ("QB","K","P","LS","CB","S","LB","DE","DT","OT","OG","C","NT","DL","OL"):
-                    continue
-                if not active and not team:
-                    continue
-                results.append({
-                    "id":       pid,
-                    "name":     a.get("fullName","") or r["name"],
-                    "position": pos,
-                    "team":     team,
-                })
+                ath  = nfl_get(f"{NFL_BASE}/athletes/{pid}")
+                a    = ath.get("athlete", {})
+                pos  = a.get("position",{}).get("abbreviation","") if isinstance(a.get("position"),dict) else ""
+                team = a.get("team",{}).get("abbreviation","")     if isinstance(a.get("team"),dict)     else ""
+                pname= a.get("fullName","") or pname
             except Exception:
-                # If enrichment fails just include with basic info
-                results.append({"id": pid, "name": r["name"],
-                                 "position": "", "team": ""})
+                pass
+            # Skip known non-skill positions
+            if pos.upper() in NON_SKILL:
+                continue
+            results.append({"id": pid, "name": pname, "position": pos, "team": team})
 
+        # If filtering removed everything, return top 3 unfiltered
         if not results:
-            raise ValueError(
-                f"No NFL skill position player found for '{name}'. "
-                f"Check spelling (First Last).")
+            for r in raw[:3]:
+                results.append({"id": r.get("id",""),
+                                 "name": r.get("displayName","") or r.get("name",""),
+                                 "position": "", "team": ""})
 
         cset(ck, results)
         return results
