@@ -340,67 +340,51 @@ def search_nhl_player(name):
     cached = cget(ck)
     if cached: return cached
     try:
-        # NHL Stats API - search skaters by name
         parts = name.strip().split()
         last  = parts[-1] if parts else name
         first = parts[0]  if len(parts) > 1 else ""
-
-        # Build cayenneExp filter
-        if first:
-            exp = f'lastName="{last}" and firstName="{first}"'
-        else:
-            exp = f'lastName="{last}"'
-
         results = []
 
-        # Try skaters first
-        url = "https://api.nhle.com/stats/rest/en/skater/summary"
-        data = nhl_get(url, {
-            "limit": 10, "start": 0,
-            "sort": "points", "dir": "desc",
-            "cayenneExp": exp + " and seasonId=20252026 and gameTypeId=2"
-        })
-        for p in (data.get("data") or [])[:8]:
-            results.append({
-                "id":       p.get("playerId"),
-                "name":     f"{p.get('skaterFullName', '')}".strip() or f"{first} {last}".strip(),
-                "position": p.get("positionCode",""),
-                "team":     p.get("teamAbbrevs",""),
-            })
+        # Try multiple search strategies in order
+        skater_url = "https://api.nhle.com/stats/rest/en/skater/summary"
+        goalie_url = "https://api.nhle.com/stats/rest/en/goalie/summary"
 
-        # Try goalies if no skater results
-        if not results:
-            url2 = "https://api.nhle.com/stats/rest/en/goalie/summary"
-            data2 = nhl_get(url2, {
-                "limit": 10, "start": 0,
-                "sort": "wins", "dir": "desc",
-                "cayenneExp": exp + " and seasonId=20252026 and gameTypeId=2"
-            })
-            for p in (data2.get("data") or [])[:8]:
-                results.append({
-                    "id":       p.get("playerId"),
-                    "name":     f"{p.get('goalieFullName', '')}".strip() or f"{first} {last}".strip(),
-                    "position": "G",
-                    "team":     p.get("teamAbbrevs",""),
-                })
-
-        # Fallback: search prior season if no results
-        if not results:
-            data3 = nhl_get(url, {
-                "limit": 10, "start": 0,
-                "sort": "points", "dir": "desc",
-                "cayenneExp": exp + " and seasonId=20242025 and gameTypeId=2"
-            })
-            for p in (data3.get("data") or [])[:8]:
-                results.append({
-                    "id":       p.get("playerId"),
-                    "name":     f"{p.get('skaterFullName', '')}".strip() or f"{first} {last}".strip(),
-                    "position": p.get("positionCode",""),
-                    "team":     p.get("teamAbbrevs",""),
-                })
+        for season_id in [20252026, 20242025]:
+            if results: break
+            # First + Last name
+            if first:
+                for exp in [
+                    f'lastName="{last}" and firstName="{first}" and seasonId={season_id} and gameTypeId=2',
+                    f'lastName="{last}" and seasonId={season_id} and gameTypeId=2',
+                ]:
+                    if results: break
+                    try:
+                        d = nhl_get(skater_url, {"limit":5,"start":0,"sort":"points","dir":"desc","cayenneExp":exp})
+                        for p in (d.get("data") or [])[:5]:
+                            pid = p.get("playerId")
+                            if not pid: continue
+                            results.append({"id":int(pid),"name":p.get("skaterFullName","").strip() or f"{first} {last}".strip(),"position":p.get("positionCode",""),"team":p.get("teamAbbrevs","")})
+                    except Exception: pass
+                    if not results:
+                        try:
+                            d = nhl_get(goalie_url, {"limit":5,"start":0,"sort":"wins","dir":"desc","cayenneExp":exp})
+                            for p in (d.get("data") or [])[:5]:
+                                pid = p.get("playerId")
+                                if not pid: continue
+                                results.append({"id":int(pid),"name":p.get("goalieFullName","").strip() or f"{first} {last}".strip(),"position":"G","team":p.get("teamAbbrevs","")})
+                        except Exception: pass
+            else:
+                exp = f'lastName="{last}" and seasonId={season_id} and gameTypeId=2'
+                try:
+                    d = nhl_get(skater_url, {"limit":5,"start":0,"sort":"points","dir":"desc","cayenneExp":exp})
+                    for p in (d.get("data") or [])[:5]:
+                        pid = p.get("playerId")
+                        if not pid: continue
+                        results.append({"id":int(pid),"name":p.get("skaterFullName","").strip(),"position":p.get("positionCode",""),"team":p.get("teamAbbrevs","")})
+                except Exception: pass
 
         if not results:
-            raise ValueError(f"No NHL player found for '{name}'. Check spelling (First Last).")
+            raise ValueError(f"No NHL player found for '{name}'. Try last name only (e.g. 'McDavid').")
 
         cset(ck, results)
         return results
