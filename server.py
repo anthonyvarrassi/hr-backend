@@ -341,9 +341,13 @@ def search_nhl_player(name):
     if cached: return cached
     try:
         parts = name.strip().split()
-        # Always title-case each part — API is case sensitive
-        last  = parts[-1].title() if parts else name.title()
-        first = parts[0].title()  if len(parts) > 1 else ""
+        # For the last name, try both as-typed and title-cased
+        # This handles names like MacKinnon, O'Reilly, etc.
+        raw_last   = parts[-1] if parts else name
+        raw_first  = parts[0]  if len(parts) > 1 else ""
+        # Generate name variants to try
+        last_variants  = list(dict.fromkeys([raw_last, raw_last.title(), raw_last.capitalize()]))
+        first_variants = list(dict.fromkeys([raw_first, raw_first.title()])) if raw_first else [""]
 
         results = []
         skater_url = "https://api.nhle.com/stats/rest/en/skater/summary"
@@ -370,14 +374,16 @@ def search_nhl_player(name):
 
         for season_id in [20252026, 20242025]:
             if results: break
-            # Try full name first, then last name only
-            exps = []
-            if first:
-                exps.append(f'lastName="{last}" and firstName="{first}" and seasonId={season_id} and gameTypeId=2')
-            exps.append(f'lastName="{last}" and seasonId={season_id} and gameTypeId=2')
-            for exp in exps:
-                results = try_search(exp)
+            for last in last_variants:
                 if results: break
+                exps = []
+                for fv in first_variants:
+                    if fv:
+                        exps.append(f'lastName="{last}" and firstName="{fv}" and seasonId={season_id} and gameTypeId=2')
+                exps.append(f'lastName="{last}" and seasonId={season_id} and gameTypeId=2')
+                for exp in exps:
+                    results = try_search(exp)
+                    if results: break
 
         if not results:
             raise ValueError(f"No NHL player found for '{name}'. Enter last name only (e.g. McDavid, Hellebuyck).")
