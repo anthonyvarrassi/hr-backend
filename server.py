@@ -617,66 +617,47 @@ def search_nfl_player(name):
     try:
         results = []
 
-        # Try ESPN search API
-        try:
-            data = nfl_get("https://site.api.espn.com/apis/search/v2",
-                           {"query": name, "sport": "football",
-                            "league": "nfl", "limit": 10})
-            for h in data.get("results", []):
-                if h.get("type") != "athlete":
+        # ESPN search API
+        data = nfl_get("https://site.api.espn.com/apis/search/v2",
+                       {"query": name, "sport": "football",
+                        "league": "nfl", "limit": 10})
+        raw = []
+        for h in data.get("results", []):
+            if h.get("type") != "athlete":
+                continue
+            raw.append({"id": h.get("id",""),
+                        "name": h.get("displayName","") or h.get("name","")})
+
+        # Enrich each result with position + team from athlete endpoint
+        # Only fetch first 5 to keep it fast
+        for r in raw[:5]:
+            pid = r["id"]
+            try:
+                ath = nfl_get(f"{NFL_BASE}/athletes/{pid}")
+                a   = ath.get("athlete", {})
+                pos = a.get("position", {}).get("abbreviation","") if isinstance(a.get("position"),dict) else ""
+                team= a.get("team", {}).get("abbreviation","")     if isinstance(a.get("team"),dict)     else ""
+                active = a.get("active", True)
+                # Skip non-skill positions and inactive players with no team
+                if pos.upper() in ("QB","K","P","LS","CB","S","LB","DE","DT","OT","OG","C","NT","DL","OL"):
                     continue
-                pid   = h.get("id","")
-                pname = h.get("displayName","") or h.get("name","")
-                sub   = h.get("subtitle","")
-                parts = [p.strip() for p in sub.split("·")] if "·" in sub else [sub.strip()]
-                pos   = parts[0] if parts else ""
-                team  = parts[1] if len(parts) > 1 else ""
-                results.append({"id": pid, "name": pname,
-                                 "position": pos, "team": team})
-        except Exception:
-            pass
-
-        # Fallback: ESPN core athletes search
-        if not results:
-            try:
-                data2 = nfl_get(
-                    "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes",
-                    {"limit": 10, "active": True,
-                     "searchTerm": name})
-                for item in data2.get("items", []):
-                    ref = item.get("$ref","")
-                    pid = ref.split("/athletes/")[-1].split("?")[0] if "/athletes/" in ref else ""
-                    if pid:
-                        results.append({"id": pid, "name": name,
-                                        "position": "", "team": ""})
+                if not active and not team:
+                    continue
+                results.append({
+                    "id":       pid,
+                    "name":     a.get("fullName","") or r["name"],
+                    "position": pos,
+                    "team":     team,
+                })
             except Exception:
-                pass
-
-        # Fallback: try ESPN autocomplete
-        if not results:
-            try:
-                data3 = nfl_get(
-                    "https://site.api.espn.com/apis/search/v2",
-                    {"query": name, "limit": 10})
-                for h in data3.get("results", []):
-                    if h.get("type") != "athlete":
-                        continue
-                    sub = h.get("subtitle","")
-                    if "NFL" not in sub and "football" not in sub.lower():
-                        continue
-                    results.append({
-                        "id":       h.get("id",""),
-                        "name":     h.get("displayName",""),
-                        "position": sub.split("·")[0].strip() if "·" in sub else "",
-                        "team":     sub.split("·")[1].strip() if "·" in sub else "",
-                    })
-            except Exception:
-                pass
+                # If enrichment fails just include with basic info
+                results.append({"id": pid, "name": r["name"],
+                                 "position": "", "team": ""})
 
         if not results:
             raise ValueError(
-                f"No NFL player found for '{name}'. "
-                f"Check spelling (First Last) or try last name only.")
+                f"No NFL skill position player found for '{name}'. "
+                f"Check spelling (First Last).")
 
         cset(ck, results)
         return results
