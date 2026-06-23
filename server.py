@@ -774,7 +774,7 @@ def nfl_player(player_id):
             f'RUSH_ATT(int rush attempts), RUSH_YDS(float rush yards), RUSH_YPG(float rush yards per game), '
             f'ATT_PG(float rush attempts per game), '
             f'RZ_LOOKS(int red zone targets+carries), RZ_PG(float red zone looks per game), '
-            f'small_sample(bool false), season_used(int 2024).'
+            f'small_sample(bool false), season_used(int 2025).'
         )
         cset(ck, d)
         return jsonify(d)
@@ -793,14 +793,14 @@ def nfl_defense(team):
         d = claude_stats(
             f'Return the actual 2025 NFL regular season defensive stats specifically for the {team_name} ({team}). '
             f'These must be real stats unique to this team, not league averages. '
-            f'For example: a strong defense like SF or BAL allows ~17-20 pts/g, '
-            f'a weak defense like CAR or NE allows ~27-30 pts/g, average teams ~22-24 pts/g. '
-            f'JSON keys: GP(int, 17), TD_allowed(int, total TDs allowed on season), '
-            f'TDPG(float, TDs allowed per game), '
-            f'PTS_pg(float, points allowed per game specific to {team_name}), '
-            f'YDS_pg(float, yards allowed per game specific to {team_name}), '
-            f'live(bool, false). '
-            f'Return only real 2024 stats for {team_name}, not generic values.'
+            f'Context: elite defenses like PHI, DEN, LAC allow ~17-20 pts/g, '
+            f'weak defenses like CAR, JAX, TEN allow ~27-31 pts/g, average teams ~22-25 pts/g. '
+            f'JSON keys: GP(int 17), TD_allowed(int total TDs allowed in 2025 season), '
+            f'TDPG(float TDs allowed per game in 2025), '
+            f'PTS_pg(float points allowed per game in 2025 for {team_name}), '
+            f'YDS_pg(float yards allowed per game in 2025 for {team_name}), '
+            f'live(bool false), season(int 2025). '
+            f'Return only real 2025 NFL stats for {team_name}.'
         )
         cset(ck, d)
         return jsonify(d)
