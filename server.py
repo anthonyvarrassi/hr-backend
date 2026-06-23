@@ -6,7 +6,7 @@ Deploy to Railway or run locally.
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import requests, time, os
+import requests, time, os, json
 
 app = Flask(__name__)
 CORS(app)
@@ -659,7 +659,207 @@ def search_nfl_player(name):
         raise ValueError(f"NFL player search failed: {e}")
 
 
-def get_nfl_player_stats(player_id, season=None):
+
+# ═══════════════════════════════════════════════════════════════
+# NFL ROUTES — Claude AI powered (ESPN blocks server requests)
+# ═══════════════════════════════════════════════════════════════
+
+
+NFL_LG = {
+    "RB_TDPG": 0.45, "WR_TDPG": 0.22, "TE_TDPG": 0.18,
+    "DEF_TDPG": 0.15, "DEF_PTS": 22.5,
+}
+
+NFL_TEAMS_MAP = {
+    "ARI":"Arizona Cardinals","ATL":"Atlanta Falcons","BAL":"Baltimore Ravens",
+    "BUF":"Buffalo Bills","CAR":"Carolina Panthers","CHI":"Chicago Bears",
+    "CIN":"Cincinnati Bengals","CLE":"Cleveland Browns","DAL":"Dallas Cowboys",
+    "DEN":"Denver Broncos","DET":"Detroit Lions","GB":"Green Bay Packers",
+    "HOU":"Houston Texans","IND":"Indianapolis Colts","JAX":"Jacksonville Jaguars",
+    "KC":"Kansas City Chiefs","LAC":"Los Angeles Chargers","LAR":"Los Angeles Rams",
+    "LV":"Las Vegas Raiders","MIA":"Miami Dolphins","MIN":"Minnesota Vikings",
+    "NE":"New England Patriots","NO":"New Orleans Saints","NYG":"New York Giants",
+    "NYJ":"New York Jets","PHI":"Philadelphia Eagles","PIT":"Pittsburgh Steelers",
+    "SEA":"Seattle Seahawks","SF":"San Francisco 49ers","TB":"Tampa Bay Buccaneers",
+    "TEN":"Tennessee Titans","WSH":"Washington Commanders",
+}
+
+
+def claude_stats(prompt):
+    """Call Claude API for player stats. Returns parsed JSON dict."""
+    import os
+    api_key = os.environ.get("ANTHROPIC_API_KEY","")
+    r = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                 "content-type": "application/json"},
+        json={"model": "claude-haiku-4-5-20251001", "max_tokens": 600,
+              "system": "Return ONLY valid JSON, no markdown, no explanation.",
+              "messages": [{"role": "user", "content": prompt}]},
+        timeout=15
+    )
+    txt = r.json()["content"][0]["text"].replace("```json","").replace("```","").strip()
+    return json.loads(txt)
+
+
+@app.route("/nfl/search")
+def nfl_search():
+    name = request.args.get("name","").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    ck = f"nfl_search:{name.lower()}"
+    cached = cget(ck)
+    if cached: return jsonify({"results": cached})
+    try:
+        d = claude_stats(
+            f'NFL player search for "{name}". Return JSON: {{"results": ['
+            f'{{"id": "espn_id_string", "name": "Full Name", "position": "WR/RB/TE", "team": "ABBR"}}]}}. '
+            f'Return up to 3 matching active or recently active NFL skill position players (RB/WR/TE). '
+            f'Use realistic ESPN player IDs. If only one match exists return just that one.'
+        )
+        results = d.get("results", [])
+        cset(ck, results)
+        return jsonify({"results": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/nfl/player/<player_id>")
+def nfl_player(player_id):
+    # player_id may be a name slug or ESPN id — use Claude to get stats
+    name = request.args.get("name", player_id)
+    ck = f"nfl_player_ai:{name}"
+    cached = cget(ck)
+    if cached: return jsonify(cached)
+    try:
+        d = claude_stats(
+            f'Return 2024 NFL season stats for skill position player with ESPN id "{player_id}" '
+            f'(or best match for name "{name}"). '
+            f'JSON keys: GP(int), pos(str WR/RB/TE), TD(int), rec_TD(int), rush_TD(int), '
+            f'TDPG(float), TGT(int), TGT_PG(float), REC(int), REC_YDS(float), REC_YPG(float), '
+            f'RUSH_ATT(int), RUSH_YDS(float), RUSH_YPG(float), ATT_PG(float), '
+            f'RZ_LOOKS(int), RZ_PG(float), small_sample(bool), season_used(int 2024).'
+        )
+        cset(ck, d)
+        return jsonify(d)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/nfl/defense/<team>")
+def nfl_defense(team):
+    team = team.upper()
+    ck = f"nfl_def_ai:{team}"
+    cached = cget(ck)
+    if cached: return jsonify(cached)
+    try:
+        team_name = NFL_TEAMS_MAP.get(team, team)
+        d = claude_stats(
+            f'Return 2024 NFL season defensive stats for the {team_name} ({team}). '
+            f'JSON keys: GP(int), TD_allowed(int), TDPG(float per game), '
+            f'PTS_pg(float points allowed per game), YDS_pg(float yards allowed per game), live(bool false).'
+        )
+        cset(ck, d)
+        return jsonify(d)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/nfl/teams")
+def nfl_teams_list():
+    return jsonify(NFL_TEAMS_MAP)
+
+
+# ═══════════════════════════════════════════════════════════════
+# NBA ROUTES — Claude AI powered
+# ═══════════════════════════════════════════════════════════════
+
+NBA_LG = {
+    "PPG": 111.5, "PACE": 99.2, "DEF_RTG": 113.8,
+    "FGA_PG": 88.0, "FTA_PG": 22.0, "TS_PCT": 0.582,
+}
+
+NBA_TEAMS_MAP = {
+    "ATL":"Atlanta Hawks","BOS":"Boston Celtics","BKN":"Brooklyn Nets",
+    "CHA":"Charlotte Hornets","CHI":"Chicago Bulls","CLE":"Cleveland Cavaliers",
+    "DAL":"Dallas Mavericks","DEN":"Denver Nuggets","DET":"Detroit Pistons",
+    "GSW":"Golden State Warriors","HOU":"Houston Rockets","IND":"Indiana Pacers",
+    "LAC":"LA Clippers","LAL":"Los Angeles Lakers","MEM":"Memphis Grizzlies",
+    "MIA":"Miami Heat","MIL":"Milwaukee Bucks","MIN":"Minnesota Timberwolves",
+    "NOP":"New Orleans Pelicans","NYK":"New York Knicks","OKC":"Oklahoma City Thunder",
+    "ORL":"Orlando Magic","PHI":"Philadelphia 76ers","PHX":"Phoenix Suns",
+    "POR":"Portland Trail Blazers","SAC":"Sacramento Kings","SAS":"San Antonio Spurs",
+    "TOR":"Toronto Raptors","UTA":"Utah Jazz","WSH":"Washington Wizards",
+}
+
+
+@app.route("/nba/search")
+def nba_search():
+    name = request.args.get("name","").strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    ck = f"nba_search:{name.lower()}"
+    cached = cget(ck)
+    if cached: return jsonify({"results": cached})
+    try:
+        d = claude_stats(
+            f'NBA player search for "{name}". Return JSON: {{"results": ['
+            f'{{"id": "espn_id_string", "name": "Full Name", "position": "G/F/C/PG/SG/SF/PF", "team": "ABBR"}}]}}. '
+            f'Return up to 3 matching active NBA players. Use realistic ESPN player IDs.'
+        )
+        results = d.get("results", [])
+        cset(ck, results)
+        return jsonify({"results": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/nba/player/<player_id>")
+def nba_player(player_id):
+    name = request.args.get("name", player_id)
+    ck = f"nba_player_ai:{name}"
+    cached = cget(ck)
+    if cached: return jsonify(cached)
+    try:
+        d = claude_stats(
+            f'Return 2025-26 NBA season stats for player with ESPN id "{player_id}" '
+            f'(or best match for name "{name}"). '
+            f'JSON keys: GP(int), pos(str), PPG(float), APG(float), RPG(float), MPG(float), '
+            f'FGA(float per game), FGM(float), FG_PCT(float 0-1), '
+            f'FG3A(float), FG3M(float), FG3_PCT(float 0-1), '
+            f'FTA(float), FTM(float), FT_PCT(float 0-1), '
+            f'TS_PCT(float 0-1), USG_EST(float percent), '
+            f'small_sample(bool), season_used(int 2026).'
+        )
+        cset(ck, d)
+        return jsonify(d)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/nba/defense/<team>")
+def nba_defense(team):
+    team = team.upper()
+    ck = f"nba_def_ai:{team}"
+    cached = cget(ck)
+    if cached: return jsonify(cached)
+    try:
+        team_name = NBA_TEAMS_MAP.get(team, team)
+        d = claude_stats(
+            f'Return 2025-26 NBA season defensive stats for the {team_name} ({team}). '
+            f'JSON keys: GP(int), PAPG(float points allowed per game), '
+            f'PACE(float), DEF_RTG(float), live(bool false).'
+        )
+        cset(ck, d)
+        return jsonify(d)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.route("/nba/teams")
+def nba_teams():
+    return jsonify(NBA_TEAMS_MAP)
+
     """Pull NFL skill position stats from ESPN API."""
     if season is None:
         season = NFL_SEASON_2025
@@ -728,308 +928,4 @@ def get_nfl_player_stats(player_id, season=None):
     raise ValueError(f"No NFL stats found for player {player_id}")
 
 
-def get_nfl_defense(team_abbr, season=None):
-    """Pull team defensive stats against skill positions."""
-    if season is None:
-        season = NFL_SEASON_2025
-    ck = f"nfl_def:{team_abbr}:{season}"
-    cached = cget(ck)
-    if cached: return cached
 
-    try:
-        # Get team ID first
-        teams_data = nfl_get(f"{NFL_BASE}/teams")
-        teams = teams_data.get("sports",[{}])[0].get("leagues",[{}])[0].get("teams",[])
-        team_id = None
-        for t in teams:
-            tm = t.get("team",{})
-            if tm.get("abbreviation","").upper() == team_abbr.upper():
-                team_id = tm.get("id")
-                break
-
-        if not team_id:
-            raise ValueError("Team not found")
-
-        data = nfl_get(f"{NFL_BASE}/teams/{team_id}/statistics",
-                       {"season": season})
-
-        stat_dict = {}
-        for cat in data.get("results", {}).get("stats", {}).get("categories", []):
-            for stat in cat.get("stats", []):
-                stat_dict[stat.get("name","").lower()] = stat.get("value", 0)
-
-        gp       = int(stat_dict.get("gamesplayed", 17) or 17)
-        pts_all  = float(stat_dict.get("pointsallowed", stat_dict.get("totalPointsAllowed", 0)) or 0)
-        yds_all  = float(stat_dict.get("totalyardsallowed", stat_dict.get("yardsAllowed", 0)) or 0)
-        td_all   = float(stat_dict.get("touchdownsallowed", 0) or 0)
-        pass_td  = float(stat_dict.get("passingtouchdownsallowed", 0) or 0)
-        rush_td  = float(stat_dict.get("rushingtouchdownsallowed", 0) or 0)
-
-        tdpg_all = round((td_all or (pass_td + rush_td)) / gp, 3) if gp > 0 else NFL_LG["DEF_TDPG"] / 16
-
-        result = {
-            "GP": gp,
-            "TD_allowed": int(td_all or (pass_td + rush_td)),
-            "TDPG": tdpg_all,
-            "PTS_pg": round(pts_all / gp, 1) if gp > 0 else 0,
-            "YDS_pg": round(yds_all / gp, 1) if gp > 0 else 0,
-            "live": True,
-        }
-        cset(ck, result)
-        return result
-    except Exception:
-        return {
-            "TDPG": NFL_LG["DEF_TDPG"] / 16,
-            "PTS_pg": 22.5, "YDS_pg": 340.0,
-            "live": False,
-        }
-
-
-@app.route("/nfl/search")
-def nfl_search():
-    name = request.args.get("name","").strip()
-    if not name:
-        return jsonify({"error": "name required"}), 400
-    try:
-        results = search_nfl_player(name)
-        return jsonify({"results": results})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@app.route("/nfl/player/<player_id>")
-def nfl_player(player_id):
-    try:
-        data = get_nfl_player_stats(player_id)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@app.route("/nfl/defense/<team>")
-def nfl_defense(team):
-    try:
-        data = get_nfl_defense(team.upper())
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@app.route("/nfl/teams")
-def nfl_teams_list():
-    return jsonify(NFL_TEAMS_MAP)
-
-# ═══════════════════════════════════════════════════════════════
-# NBA ROUTES
-# ═══════════════════════════════════════════════════════════════
-
-NBA_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
-NBA_CDN  = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba"
-
-NBA_SEASON_2526 = 2025   # ESPN uses ending year for season (2025-26 = 2026)
-NBA_SEASON_2627 = 2026   # 2026-27 = 2027
-
-# League averages (2024-25)
-NBA_LG = {
-    "PPG":    111.5,
-    "PACE":   99.2,
-    "DEF_RTG": 113.8,
-    "FGA_PG":  88.0,
-    "FTA_PG":  22.0,
-    "USG":     20.0,
-    "TS_PCT":  0.582,
-}
-
-NBA_TEAMS_MAP = {
-    "ATL":"Atlanta Hawks","BOS":"Boston Celtics","BKN":"Brooklyn Nets",
-    "CHA":"Charlotte Hornets","CHI":"Chicago Bulls","CLE":"Cleveland Cavaliers",
-    "DAL":"Dallas Mavericks","DEN":"Denver Nuggets","DET":"Detroit Pistons",
-    "GSW":"Golden State Warriors","HOU":"Houston Rockets","IND":"Indiana Pacers",
-    "LAC":"LA Clippers","LAL":"Los Angeles Lakers","MEM":"Memphis Grizzlies",
-    "MIA":"Miami Heat","MIL":"Milwaukee Bucks","MIN":"Minnesota Timberwolves",
-    "NOP":"New Orleans Pelicans","NYK":"New York Knicks","OKC":"Oklahoma City Thunder",
-    "ORL":"Orlando Magic","PHI":"Philadelphia 76ers","PHX":"Phoenix Suns",
-    "POR":"Portland Trail Blazers","SAC":"Sacramento Kings","SAS":"San Antonio Spurs",
-    "TOR":"Toronto Raptors","UTA":"Utah Jazz","WSH":"Washington Wizards",
-}
-
-
-def search_nba_player(name):
-    ck = f"nba_search:{name.lower()}"
-    cached = cget(ck)
-    if cached: return cached
-    try:
-        data = nfl_get(f"{NBA_BASE}/athletes",
-                       {"search": name, "limit": 10, "active": True})
-        athletes = data.get("items", []) or data.get("athletes", [])
-        results = []
-        for a in athletes[:8]:
-            results.append({
-                "id":       a.get("id",""),
-                "name":     a.get("fullName","") or a.get("displayName",""),
-                "position": a.get("position",{}).get("abbreviation","") if isinstance(a.get("position"),dict) else "",
-                "team":     a.get("team",{}).get("abbreviation","") if isinstance(a.get("team"),dict) else "",
-            })
-        if not results:
-            data2 = nfl_get("https://site.api.espn.com/apis/search/v2",
-                            {"query": name, "sport": "basketball", "league": "nba", "limit": 8})
-            for h in data2.get("results",[]):
-                if h.get("type") != "athlete": continue
-                results.append({"id":h.get("id",""),"name":h.get("displayName",""),"position":"","team":""})
-        cset(ck, results)
-        return results
-    except Exception as e:
-        raise ValueError(f"NBA player search failed: {e}")
-
-
-def get_nba_player_stats(player_id, season=None):
-    """Pull NBA player stats from ESPN API."""
-    if season is None:
-        season = NBA_SEASON_2526
-    ck = f"nba_player:{player_id}:{season}"
-    cached = cget(ck)
-    if cached: return cached
-
-    for yr in ([season, NBA_SEASON_2526] if season == NBA_SEASON_2627 else [season, NBA_SEASON_2526]):
-        try:
-            data = nfl_get(f"{NBA_BASE}/athletes/{player_id}/statistics",
-                           {"season": yr})
-            cats = data.get("statistics", {}).get("categories", []) or data.get("categories", [])
-            stat_dict = {}
-            for cat in cats:
-                cat_name = cat.get("name","").lower()
-                labels = cat.get("labels", cat.get("names", []))
-                vals   = cat.get("values", [])
-                for i, val in enumerate(vals):
-                    lbl = labels[i] if i < len(labels) else f"stat_{i}"
-                    stat_dict[f"{cat_name}_{lbl}".lower().replace(" ","_")] = val
-
-            # Also try flat
-            for item in data.get("athlete",{}).get("statistics",[]):
-                stat_dict[item.get("name","").lower()] = item.get("value",0)
-
-            gp  = int(stat_dict.get("general_gamesplayed", stat_dict.get("gamesplayed",0)) or 0)
-            if gp == 0: continue
-
-            ppg  = float(stat_dict.get("scoring_pts",    stat_dict.get("scoring_avgpoints",    stat_dict.get("avgpoints",0)))    or 0)
-            apg  = float(stat_dict.get("general_ast",    stat_dict.get("assists",0)))    or 0
-            rpg  = float(stat_dict.get("rebounds_totreb",stat_dict.get("totalrebounds",0))) or 0
-            mpg  = float(stat_dict.get("general_min",    stat_dict.get("avgminutes",0)))     or 0
-            fga  = float(stat_dict.get("shooting_fga",   stat_dict.get("fieldgoalsattempted",0))) or 0
-            fgm  = float(stat_dict.get("shooting_fgm",   stat_dict.get("fieldgoalsmade",0)))      or 0
-            fg3a = float(stat_dict.get("shooting_3pa",   stat_dict.get("threepointersattempted",0))) or 0
-            fg3m = float(stat_dict.get("shooting_3pm",   stat_dict.get("threepointersmade",0)))      or 0
-            fta  = float(stat_dict.get("shooting_fta",   stat_dict.get("freethrowsattempted",0))) or 0
-            ftm  = float(stat_dict.get("shooting_ftm",   stat_dict.get("freethrowsmade",0)))      or 0
-            fg_pct  = round(fgm/fga, 3)  if fga > 0 else 0
-            ft_pct  = round(ftm/fta, 3)  if fta > 0 else 0
-            fg3_pct = round(fg3m/fg3a,3) if fg3a > 0 else 0
-            # True shooting %: PTS / (2 * (FGA + 0.44*FTA))
-            ts_pct  = round(ppg / (2*(fga+0.44*fta)), 3) if (fga+fta) > 0 else 0
-            # Usage rate estimate: (FGA + 0.44*FTA + TOV) / team_poss — approximate from FGA+FTA
-            usg_est = round((fga + 0.44*fta) / max(1, mpg/48*100), 1)
-            fga_pg  = round(fga, 1)
-            fta_pg  = round(fta, 1)
-
-            athlete = data.get("athlete",{})
-            pos = athlete.get("position",{}).get("abbreviation","G") if isinstance(athlete.get("position"),dict) else "G"
-
-            result = {
-                "GP":gp,"pos":pos,
-                "PPG":round(ppg,1),"APG":round(apg,1),"RPG":round(rpg,1),
-                "MPG":round(mpg,1),
-                "FGA":fga_pg,"FGM":round(fgm,1),"FG_PCT":fg_pct,
-                "FG3A":round(fg3a,1),"FG3M":round(fg3m,1),"FG3_PCT":fg3_pct,
-                "FTA":fta_pg,"FTM":round(ftm,1),"FT_PCT":ft_pct,
-                "TS_PCT":ts_pct,"USG_EST":usg_est,
-                "small_sample":gp < 10,
-                "season_used":yr,
-            }
-            cset(ck, result)
-            return result
-        except Exception:
-            continue
-
-    raise ValueError(f"No NBA stats found for player {player_id}")
-
-
-def get_nba_defense(team_abbr, season=None):
-    """Pull NBA team defensive stats."""
-    if season is None:
-        season = NBA_SEASON_2526
-    ck = f"nba_def:{team_abbr}:{season}"
-    cached = cget(ck)
-    if cached: return cached
-
-    try:
-        teams_data = nfl_get(f"{NBA_BASE}/teams")
-        teams = teams_data.get("sports",[{}])[0].get("leagues",[{}])[0].get("teams",[])
-        team_id = None
-        for t in teams:
-            tm = t.get("team",{})
-            if tm.get("abbreviation","").upper() == team_abbr.upper():
-                team_id = tm.get("id")
-                break
-
-        if not team_id:
-            raise ValueError("Team not found")
-
-        data = nfl_get(f"{NBA_BASE}/teams/{team_id}/statistics",
-                       {"season": season})
-        stat_dict = {}
-        for cat in data.get("results",{}).get("stats",{}).get("categories",[]):
-            for stat in cat.get("stats",[]):
-                stat_dict[stat.get("name","").lower()] = stat.get("value",0)
-
-        gp       = int(stat_dict.get("gamesplayed", 82) or 82)
-        pts_all  = float(stat_dict.get("pointsallowed", stat_dict.get("opppoints", 0)) or 0)
-        pace     = float(stat_dict.get("pace", NBA_LG["PACE"]) or NBA_LG["PACE"])
-        def_rtg  = float(stat_dict.get("defensiverating", NBA_LG["DEF_RTG"]) or NBA_LG["DEF_RTG"])
-        papg     = round(pts_all/gp, 1) if gp > 0 and pts_all > 0 else NBA_LG["PPG"]
-
-        result = {
-            "GP": gp, "PAPG": papg,
-            "PACE": round(pace,1),
-            "DEF_RTG": round(def_rtg,1),
-            "live": True,
-        }
-        cset(ck, result)
-        return result
-    except Exception:
-        return {"PAPG": NBA_LG["PPG"], "PACE": NBA_LG["PACE"],
-                "DEF_RTG": NBA_LG["DEF_RTG"], "live": False}
-
-
-@app.route("/nba/search")
-def nba_search():
-    name = request.args.get("name","").strip()
-    if not name:
-        return jsonify({"error":"name required"}), 400
-    try:
-        results = search_nba_player(name)
-        return jsonify({"results": results})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@app.route("/nba/player/<player_id>")
-def nba_player(player_id):
-    try:
-        data = get_nba_player_stats(player_id)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@app.route("/nba/defense/<team>")
-def nba_defense(team):
-    try:
-        data = get_nba_defense(team.upper())
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@app.route("/nba/teams")
-def nba_teams():
-    return jsonify(NBA_TEAMS_MAP)
