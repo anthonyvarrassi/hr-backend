@@ -339,19 +339,37 @@ def search_nhl_player(name):
     cached = cget(ck)
     if cached: return cached
     try:
-        data = nhl_get(f"https://search.d3.nhle.com/api/v1/search",
-                       {"q": name, "type": "player", "limit": 8, "culture": "en-us"})
-        players = data if isinstance(data, list) else data.get("players", [])
+        # Use the NHL web API suggest endpoint
+        data = nhl_get(f"https://suggest.svc.nhl.com/suggestController/public/suggests/players",
+                       {"search": name, "active": "true", "limit": 8})
+        suggestions = data.get("suggestions", [])
         results = []
-        for p in players[:8]:
-            pid = p.get("playerId") or p.get("id")
-            if not pid: continue
-            results.append({
-                "id":       pid,
-                "name":     p.get("name","") or f"{p.get('firstName','')} {p.get('lastName','')}".strip(),
-                "position": p.get("positionCode",""),
-                "team":     p.get("teamAbbrev","") or p.get("lastTeamAbbrev",""),
-            })
+        for s in suggestions[:8]:
+            # Format: "playerId|lastName|firstName|position|teamId|teamAbbrev|..."
+            parts = s.split("|") if isinstance(s, str) else []
+            if len(parts) >= 6:
+                pid      = parts[0]
+                last     = parts[1]
+                first    = parts[2]
+                pos      = parts[3]
+                team_abbr= parts[5] if len(parts) > 5 else ""
+                results.append({
+                    "id":       int(pid) if pid.isdigit() else pid,
+                    "name":     f"{first} {last}".strip(),
+                    "position": pos,
+                    "team":     team_abbr,
+                })
+        if not results:
+            # Fallback: use NHL stats API player search
+            data2 = nhl_get(f"{NHL}/player/search",
+                            {"name": name, "limit": 8})
+            for p in (data2.get("players") or data2.get("data") or [])[:8]:
+                results.append({
+                    "id":       p.get("playerId") or p.get("id"),
+                    "name":     p.get("name","") or f"{p.get('firstName',{}).get('default','')} {p.get('lastName',{}).get('default','')}".strip(),
+                    "position": p.get("positionCode",""),
+                    "team":     p.get("teamAbbrev","") or p.get("currentTeamAbbrev",""),
+                })
         cset(ck, results)
         return results
     except Exception as e:
