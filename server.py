@@ -615,40 +615,69 @@ def search_nfl_player(name):
     cached = cget(ck)
     if cached: return cached
     try:
-        # Use ESPN search API
-        data = nfl_get("https://site.api.espn.com/apis/search/v2",
-                       {"query": name, "sport": "football", "league": "nfl", "limit": 10})
         results = []
-        for h in data.get("results", []):
-            if h.get("type") != "athlete":
-                continue
-            pid  = h.get("id","")
-            pname= h.get("displayName","") or h.get("name","")
-            sub  = h.get("subtitle","")
-            # subtitle is usually "Position · Team"
-            parts = [p.strip() for p in sub.split("·")] if "·" in sub else [sub]
-            pos  = parts[0] if parts else ""
-            team = parts[1] if len(parts) > 1 else ""
-            # Filter to skill positions
-            if pos.upper() not in ("RB","WR","TE","FB","","UNKNOWN"):
-                if pos.upper() in ("QB","K","P","LS","CB","S","LB","DE","DT","OT","OG","C"):
+
+        # Try ESPN search API
+        try:
+            data = nfl_get("https://site.api.espn.com/apis/search/v2",
+                           {"query": name, "sport": "football",
+                            "league": "nfl", "limit": 10})
+            for h in data.get("results", []):
+                if h.get("type") != "athlete":
                     continue
-            results.append({"id": pid, "name": pname, "position": pos, "team": team})
+                pid   = h.get("id","")
+                pname = h.get("displayName","") or h.get("name","")
+                sub   = h.get("subtitle","")
+                parts = [p.strip() for p in sub.split("·")] if "·" in sub else [sub.strip()]
+                pos   = parts[0] if parts else ""
+                team  = parts[1] if len(parts) > 1 else ""
+                results.append({"id": pid, "name": pname,
+                                 "position": pos, "team": team})
+        except Exception:
+            pass
+
+        # Fallback: ESPN core athletes search
         if not results:
-            # Fallback: try ESPN autocomplete
-            data2 = nfl_get("https://site.api.espn.com/apis/common/v3/search",
-                            {"query": name, "limit": 10, "mode": "prefix",
-                             "sport": "football", "league": "nfl"})
-            for item in data2.get("items", []):
-                if item.get("type") != "player": continue
-                results.append({
-                    "id":       item.get("id",""),
-                    "name":     item.get("displayName",""),
-                    "position": item.get("position",""),
-                    "team":     item.get("team",""),
-                })
+            try:
+                data2 = nfl_get(
+                    "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes",
+                    {"limit": 10, "active": True,
+                     "searchTerm": name})
+                for item in data2.get("items", []):
+                    ref = item.get("$ref","")
+                    pid = ref.split("/athletes/")[-1].split("?")[0] if "/athletes/" in ref else ""
+                    if pid:
+                        results.append({"id": pid, "name": name,
+                                        "position": "", "team": ""})
+            except Exception:
+                pass
+
+        # Fallback: try ESPN autocomplete
         if not results:
-            raise ValueError(f"No NFL player found for '{name}'. Check spelling (First Last).")
+            try:
+                data3 = nfl_get(
+                    "https://site.api.espn.com/apis/search/v2",
+                    {"query": name, "limit": 10})
+                for h in data3.get("results", []):
+                    if h.get("type") != "athlete":
+                        continue
+                    sub = h.get("subtitle","")
+                    if "NFL" not in sub and "football" not in sub.lower():
+                        continue
+                    results.append({
+                        "id":       h.get("id",""),
+                        "name":     h.get("displayName",""),
+                        "position": sub.split("·")[0].strip() if "·" in sub else "",
+                        "team":     sub.split("·")[1].strip() if "·" in sub else "",
+                    })
+            except Exception:
+                pass
+
+        if not results:
+            raise ValueError(
+                f"No NFL player found for '{name}'. "
+                f"Check spelling (First Last) or try last name only.")
+
         cset(ck, results)
         return results
     except ValueError:
