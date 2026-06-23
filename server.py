@@ -294,8 +294,9 @@ if __name__ == "__main__":
 NHL      = "https://api-web.nhle.com/v1"
 NHL_STATS= "https://api.nhle.com/stats/rest/en"
 
-NHL_SEASON_2026 = 20252026   # 2025-26 NHL season code
-NHL_SEASON_2027 = 20262027   # 2026-27 NHL season code
+NHL_SEASON_2526 = 20252026   # 2025-26 season
+NHL_SEASON_2627 = 20262027   # 2026-27 season
+NHL_SEASON_2425 = 20242025   # 2024-25 fallback
 
 NHL_TEAMS = {
     "ANA":"Anaheim Ducks","ARI":"Utah Hockey Club","BOS":"Boston Bruins",
@@ -327,153 +328,169 @@ def get_nhl_season():
     """Return current/most recent NHL season code."""
     try:
         data = nhl_get(f"{NHL}/standings/now")
-        # If standings exist for 2026-27 use that, otherwise 2025-26
-        return NHL_SEASON_2027
+        return NHL_SEASON_2627
     except Exception:
-        return NHL_SEASON_2026
+        return NHL_SEASON_2526
 
 
 def search_nhl_player(name):
-    """Search NHL API for a player."""
+    """Search NHL Stats API for a player by name."""
     ck = f"nhl_search:{name.lower()}"
     cached = cget(ck)
     if cached: return cached
     try:
-        # Use the NHL web API suggest endpoint
-        data = nhl_get(f"https://suggest.svc.nhl.com/suggestController/public/suggests/players",
-                       {"search": name, "active": "true", "limit": 8})
-        suggestions = data.get("suggestions", [])
+        # NHL Stats API - search skaters by name
+        parts = name.strip().split()
+        last  = parts[-1] if parts else name
+        first = parts[0]  if len(parts) > 1 else ""
+
+        # Build cayenneExp filter
+        if first:
+            exp = f'lastName="{last}" and firstName="{first}"'
+        else:
+            exp = f'lastName="{last}"'
+
         results = []
-        for s in suggestions[:8]:
-            # Format: "playerId|lastName|firstName|position|teamId|teamAbbrev|..."
-            parts = s.split("|") if isinstance(s, str) else []
-            if len(parts) >= 6:
-                pid      = parts[0]
-                last     = parts[1]
-                first    = parts[2]
-                pos      = parts[3]
-                team_abbr= parts[5] if len(parts) > 5 else ""
-                results.append({
-                    "id":       int(pid) if pid.isdigit() else pid,
-                    "name":     f"{first} {last}".strip(),
-                    "position": pos,
-                    "team":     team_abbr,
-                })
+
+        # Try skaters first
+        url = "https://api.nhle.com/stats/rest/en/skater/summary"
+        data = nhl_get(url, {
+            "limit": 10, "start": 0,
+            "sort": "points", "dir": "desc",
+            "cayenneExp": exp + " and seasonId=20252026 and gameTypeId=2"
+        })
+        for p in (data.get("data") or [])[:8]:
+            results.append({
+                "id":       p.get("playerId"),
+                "name":     f"{p.get('skaterFullName', '')}".strip() or f"{first} {last}".strip(),
+                "position": p.get("positionCode",""),
+                "team":     p.get("teamAbbrevs",""),
+            })
+
+        # Try goalies if no skater results
         if not results:
-            # Fallback: use NHL stats API player search
-            data2 = nhl_get(f"{NHL}/player/search",
-                            {"name": name, "limit": 8})
-            for p in (data2.get("players") or data2.get("data") or [])[:8]:
+            url2 = "https://api.nhle.com/stats/rest/en/goalie/summary"
+            data2 = nhl_get(url2, {
+                "limit": 10, "start": 0,
+                "sort": "wins", "dir": "desc",
+                "cayenneExp": exp + " and seasonId=20252026 and gameTypeId=2"
+            })
+            for p in (data2.get("data") or [])[:8]:
                 results.append({
-                    "id":       p.get("playerId") or p.get("id"),
-                    "name":     p.get("name","") or f"{p.get('firstName',{}).get('default','')} {p.get('lastName',{}).get('default','')}".strip(),
-                    "position": p.get("positionCode",""),
-                    "team":     p.get("teamAbbrev","") or p.get("currentTeamAbbrev",""),
+                    "id":       p.get("playerId"),
+                    "name":     f"{p.get('goalieFullName', '')}".strip() or f"{first} {last}".strip(),
+                    "position": "G",
+                    "team":     p.get("teamAbbrevs",""),
                 })
+
+        # Fallback: search prior season if no results
+        if not results:
+            data3 = nhl_get(url, {
+                "limit": 10, "start": 0,
+                "sort": "points", "dir": "desc",
+                "cayenneExp": exp + " and seasonId=20242025 and gameTypeId=2"
+            })
+            for p in (data3.get("data") or [])[:8]:
+                results.append({
+                    "id":       p.get("playerId"),
+                    "name":     f"{p.get('skaterFullName', '')}".strip() or f"{first} {last}".strip(),
+                    "position": p.get("positionCode",""),
+                    "team":     p.get("teamAbbrevs",""),
+                })
+
+        if not results:
+            raise ValueError(f"No NHL player found for '{name}'. Check spelling (First Last).")
+
         cset(ck, results)
         return results
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"NHL player search failed: {e}")
 
 
 def get_skater_stats(pid, season=None):
-    """Pull skater stats from NHL API."""
+    """Pull skater stats from NHL Stats API."""
     if season is None:
-        season = get_nhl_season()
+        season = NHL_SEASON_2526
     ck = f"nhl_skater:{pid}:{season}"
     cached = cget(ck)
     if cached: return cached
 
-    try:
-        data = nhl_get(f"{NHL}/player/{pid}/landing")
-        seasons = data.get("seasonTotals", [])
-        # Find matching season
-        reg = [s for s in seasons if s.get("season") == season and s.get("gameTypeId") == 2]
-        if not reg and season == NHL_SEASON_2027:
-            # Fall back to 2025-26
-            reg = [s for s in seasons if s.get("season") == NHL_SEASON_2026 and s.get("gameTypeId") == 2]
-            if reg: season = NHL_SEASON_2026
-        if not reg:
-            # Try most recent season
-            reg_all = [s for s in seasons if s.get("gameTypeId") == 2]
-            if reg_all:
-                reg = [sorted(reg_all, key=lambda x: x.get("season",0), reverse=True)[0]]
-                season = reg[0].get("season", season)
-
-        if not reg:
-            raise ValueError(f"No NHL stats found for player {pid}")
-
-        s = reg[0]
-        gp     = int(s.get("gamesPlayed", 0))
-        goals  = int(s.get("goals", 0))
-        assists= int(s.get("assists", 0))
-        shots  = int(s.get("shots", 0))
-        ppg    = int(s.get("powerPlayGoals", 0))
-        ppp    = int(s.get("powerPlayPoints", 0))
-        toi    = s.get("avgTimeOnIcePerGame", "0:00")
-        plus_m = int(s.get("plusMinus", 0))
-
-        gpg    = round(goals/gp, 4)         if gp > 0 else 0
-        spg    = round(shots/gp, 2)         if gp > 0 else 0
-        sh_pct = round(goals/shots*100, 1)  if shots > 0 else 0
-        ppgpg  = round(ppg/gp, 3)           if gp > 0 else 0
-        pts    = goals + assists
-
-        result = {
-            "GP": gp, "G": goals, "A": assists, "PTS": pts,
-            "S": shots, "S_pct": sh_pct, "PPG": ppg, "PPP": ppp,
-            "GPG": gpg, "SPG": spg, "PPGPG": ppgpg,
-            "TOI": toi, "plusMinus": plus_m,
-            "small_sample": gp < 10,
-            "season_used": season,
-        }
-        cset(ck, result)
-        return result
-    except Exception as e:
-        raise ValueError(str(e))
+    for sid in [season, NHL_SEASON_2526, NHL_SEASON_2425]:
+        try:
+            data = nhl_get("https://api.nhle.com/stats/rest/en/skater/summary", {
+                "limit": 1, "start": 0,
+                "cayenneExp": f"playerId={pid} and seasonId={sid} and gameTypeId=2"
+            })
+            rows = data.get("data", [])
+            if not rows:
+                continue
+            s = rows[0]
+            gp       = int(s.get("gamesPlayed", 0))
+            goals    = int(s.get("goals", 0))
+            assists  = int(s.get("assists", 0))
+            pts      = int(s.get("points", 0))
+            shots    = int(s.get("shots", 0))
+            ppg      = int(s.get("ppGoals", 0))
+            ppp      = int(s.get("ppPoints", 0))
+            toi_pg   = s.get("timeOnIcePerGame", "0:00")
+            plus_m   = int(s.get("plusMinus", 0))
+            gpg      = round(goals/gp, 4)        if gp > 0 else 0
+            spg      = round(shots/gp, 2)        if gp > 0 else 0
+            sh_pct   = round(goals/shots*100, 1) if shots > 0 else 0
+            ppgpg    = round(ppg/gp, 3)          if gp > 0 else 0
+            result = {
+                "GP": gp, "G": goals, "A": assists, "PTS": pts,
+                "S": shots, "S_pct": sh_pct, "PPG": ppg, "PPP": ppp,
+                "GPG": gpg, "SPG": spg, "PPGPG": ppgpg,
+                "TOI": toi_pg, "plusMinus": plus_m,
+                "small_sample": gp < 10,
+                "season_used": sid,
+            }
+            cset(ck, result)
+            return result
+        except Exception:
+            continue
+    raise ValueError(f"No NHL skater stats found for player {pid}")
 
 
 def get_goalie_stats(pid, season=None):
-    """Pull goalie stats from NHL API."""
+    """Pull goalie stats from NHL Stats API."""
     if season is None:
-        season = get_nhl_season()
+        season = NHL_SEASON_2526
     ck = f"nhl_goalie:{pid}:{season}"
     cached = cget(ck)
     if cached: return cached
 
-    try:
-        data = nhl_get(f"{NHL}/player/{pid}/landing")
-        seasons = data.get("seasonTotals", [])
-        reg = [s for s in seasons if s.get("season") == season and s.get("gameTypeId") == 2]
-        if not reg and season == NHL_SEASON_2027:
-            reg = [s for s in seasons if s.get("season") == NHL_SEASON_2026 and s.get("gameTypeId") == 2]
-        if not reg:
-            reg_all = [s for s in seasons if s.get("gameTypeId") == 2]
-            if reg_all:
-                reg = [sorted(reg_all, key=lambda x: x.get("season",0), reverse=True)[0]]
-
-        if not reg:
-            raise ValueError("No goalie stats found")
-
-        s = reg[0]
-        gp    = int(s.get("gamesPlayed", 0))
-        gaa   = round(float(s.get("goalsAgainstAverage", 0) or 0), 2)
-        sv_pct= round(float(s.get("savePct", 0) or 0), 3)
-        wins  = int(s.get("wins", 0))
-        sa    = int(s.get("shotsAgainst", 0))
-        ga    = int(s.get("goalsAgainst", 0))
-        so    = int(s.get("shutouts", 0))
-        sapg  = round(sa/gp, 1) if gp > 0 else 0
-
-        result = {
-            "GP": gp, "W": wins, "GAA": gaa, "SV_PCT": sv_pct,
-            "SA": sa, "GA": ga, "SO": so, "SAPG": sapg,
-            "small_sample": gp < 5,
-        }
-        cset(ck, result)
-        return result
-    except Exception as e:
-        raise ValueError(str(e))
+    for sid in [season, NHL_SEASON_2526, NHL_SEASON_2425]:
+        try:
+            data = nhl_get("https://api.nhle.com/stats/rest/en/goalie/summary", {
+                "limit": 1, "start": 0,
+                "cayenneExp": f"playerId={pid} and seasonId={sid} and gameTypeId=2"
+            })
+            rows = data.get("data", [])
+            if not rows:
+                continue
+            s    = rows[0]
+            gp   = int(s.get("gamesPlayed", 0))
+            wins = int(s.get("wins", 0))
+            gaa  = round(float(s.get("goalsAgainstAverage", 0) or 0), 2)
+            sv   = round(float(s.get("savePct", 0) or 0), 3)
+            sa   = int(s.get("shotsAgainst", 0))
+            ga   = int(s.get("goalsAgainst", 0))
+            so   = int(s.get("shutouts", 0))
+            sapg = round(sa/gp, 1) if gp > 0 else 0
+            result = {
+                "GP": gp, "W": wins, "GAA": gaa, "SV_PCT": sv,
+                "SA": sa, "GA": ga, "SO": so, "SAPG": sapg,
+                "small_sample": gp < 5,
+            }
+            cset(ck, result)
+            return result
+        except Exception:
+            continue
+    raise ValueError(f"No NHL goalie stats found for player {pid}")
 
 
 def get_team_defense(team_abbr, season=None):
