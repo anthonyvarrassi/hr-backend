@@ -615,32 +615,44 @@ def search_nfl_player(name):
     cached = cget(ck)
     if cached: return cached
     try:
-        data = nfl_get(f"{NFL_BASE}/athletes",
-                       {"search": name, "limit": 10, "active": True})
-        athletes = data.get("items", []) or data.get("athletes", [])
+        # Use ESPN search API
+        data = nfl_get("https://site.api.espn.com/apis/search/v2",
+                       {"query": name, "sport": "football", "league": "nfl", "limit": 10})
         results = []
-        for a in athletes[:8]:
-            pos = a.get("position", {}).get("abbreviation", "")
-            if pos not in ("RB","WR","TE","FB"): continue
-            results.append({
-                "id":       a.get("id",""),
-                "name":     a.get("fullName","") or a.get("displayName",""),
-                "position": pos,
-                "team":     a.get("team",{}).get("abbreviation","") if isinstance(a.get("team"),dict) else "",
-            })
+        for h in data.get("results", []):
+            if h.get("type") != "athlete":
+                continue
+            pid  = h.get("id","")
+            pname= h.get("displayName","") or h.get("name","")
+            sub  = h.get("subtitle","")
+            # subtitle is usually "Position · Team"
+            parts = [p.strip() for p in sub.split("·")] if "·" in sub else [sub]
+            pos  = parts[0] if parts else ""
+            team = parts[1] if len(parts) > 1 else ""
+            # Filter to skill positions
+            if pos.upper() not in ("RB","WR","TE","FB","","UNKNOWN"):
+                if pos.upper() in ("QB","K","P","LS","CB","S","LB","DE","DT","OT","OG","C"):
+                    continue
+            results.append({"id": pid, "name": pname, "position": pos, "team": team})
         if not results:
-            # fallback: try suggestions endpoint
-            data2 = nfl_get("https://site.api.espn.com/apis/search/v2",
-                            {"query": name, "sport": "football", "league": "nfl", "limit": 8})
-            hits = data2.get("results", [])
-            for h in hits:
-                if h.get("type") != "athlete": continue
-                d = h.get("displayName","")
-                pid = h.get("id","")
-                pos = h.get("subtitle","").split("·")[0].strip() if "·" in h.get("subtitle","") else ""
-                results.append({"id": pid, "name": d, "position": pos, "team": ""})
+            # Fallback: try ESPN autocomplete
+            data2 = nfl_get("https://site.api.espn.com/apis/common/v3/search",
+                            {"query": name, "limit": 10, "mode": "prefix",
+                             "sport": "football", "league": "nfl"})
+            for item in data2.get("items", []):
+                if item.get("type") != "player": continue
+                results.append({
+                    "id":       item.get("id",""),
+                    "name":     item.get("displayName",""),
+                    "position": item.get("position",""),
+                    "team":     item.get("team",""),
+                })
+        if not results:
+            raise ValueError(f"No NFL player found for '{name}'. Check spelling (First Last).")
         cset(ck, results)
         return results
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"NFL player search failed: {e}")
 
@@ -648,75 +660,63 @@ def search_nfl_player(name):
 def get_nfl_player_stats(player_id, season=None):
     """Pull NFL skill position stats from ESPN API."""
     if season is None:
-        season = NFL_SEASON_2026
+        season = NFL_SEASON_2025
     ck = f"nfl_player:{player_id}:{season}"
     cached = cget(ck)
     if cached: return cached
 
-    # Try requested season first, fall back to 2025
-    for yr in ([season, NFL_SEASON_2025] if season == NFL_SEASON_2026 else [season]):
+    for yr in [season, NFL_SEASON_2025]:
         try:
-            data = nfl_get(f"{NFL_BASE}/athletes/{player_id}/statistics",
-                           {"season": yr})
-            splits = data.get("statistics", {})
-            cats   = data.get("categories", [])
-            names  = data.get("names", [])
-
-            # Build stat dict from ESPN's category structure
+            # Use the correct ESPN statistics endpoint
+            data = nfl_get(f"{NFL_BASE}/athletes/{player_id}/statistics/0",
+                           {"season": yr, "seasontype": 2})
+            cats = (data.get("statistics", {}).get("categories", [])
+                    or data.get("categories", []))
             stat_dict = {}
-            for cat in (splits.get("categories") or cats or []):
+            for cat in cats:
                 cat_name = cat.get("name","").lower()
-                for i, val in enumerate(cat.get("values", [])):
-                    label = (cat.get("labels") or cat.get("names") or names or [])[i] if i < len((cat.get("labels") or cat.get("names") or names or [])) else f"{cat_name}_{i}"
-                    stat_dict[f"{cat_name}_{label}".lower()] = val
+                labels   = cat.get("labels", cat.get("names", []))
+                vals     = cat.get("values", [])
+                for i, val in enumerate(vals):
+                    lbl = labels[i] if i < len(labels) else f"stat_{i}"
+                    stat_dict[f"{cat_name}_{lbl}".lower().replace(" ","_")] = val
 
-            # Also try flat stats
-            flat = data.get("athlete", {}).get("statistics", [])
-            for item in flat:
-                stat_dict[item.get("name","").lower()] = item.get("value", 0)
-
-            gp = int(stat_dict.get("general_gamesplayed", stat_dict.get("gamesplayed", 0)) or 0)
+            gp = int(stat_dict.get("general_gamesplayed",
+                     stat_dict.get("gamesplayed", 0)) or 0)
             if gp == 0:
                 continue
 
-            # Extract by position
-            # Receiving
-            rec        = int(stat_dict.get("receiving_receptions", stat_dict.get("receptions", 0)) or 0)
-            rec_tgt    = int(stat_dict.get("receiving_targets", stat_dict.get("targets", 0)) or 0)
-            rec_yds    = float(stat_dict.get("receiving_receivingyards", stat_dict.get("receivingyards", 0)) or 0)
-            rec_td     = int(stat_dict.get("receiving_receivingtouchdowns", stat_dict.get("receivingtouchdowns", 0)) or 0)
-            rec_rz_tgt = int(stat_dict.get("receiving_receptionsinredzone", stat_dict.get("receptionsinredzone", 0)) or 0)
+            rec_tgt  = int(stat_dict.get("receiving_targets", stat_dict.get("targets", 0)) or 0)
+            rec      = int(stat_dict.get("receiving_receptions", stat_dict.get("receptions", 0)) or 0)
+            rec_yds  = float(stat_dict.get("receiving_receivingyards", stat_dict.get("receivingyards", 0)) or 0)
+            rec_td   = int(stat_dict.get("receiving_receivingtouchdowns", stat_dict.get("receivingtouchdowns", 0)) or 0)
+            rec_rz   = int(stat_dict.get("receiving_targetsinredzone", stat_dict.get("targetsinredzone", 0)) or 0)
+            rush_att = int(stat_dict.get("rushing_rushingattempts", stat_dict.get("rushingattempts", 0)) or 0)
+            rush_yds = float(stat_dict.get("rushing_rushingyards", stat_dict.get("rushingyards", 0)) or 0)
+            rush_td  = int(stat_dict.get("rushing_rushingtouchdowns", stat_dict.get("rushingtouchdowns", 0)) or 0)
+            rush_rz  = int(stat_dict.get("rushing_rushingattemptsinredzone", stat_dict.get("rushingattemptsinredzone", 0)) or 0)
 
-            # Rushing
-            rush_att   = int(stat_dict.get("rushing_rushingAttempts", stat_dict.get("rushingattempts", 0)) or 0)
-            rush_yds   = float(stat_dict.get("rushing_rushingyards", stat_dict.get("rushingyards", 0)) or 0)
-            rush_td    = int(stat_dict.get("rushing_rushingtouchdowns", stat_dict.get("rushingtouchdowns", 0)) or 0)
-            rush_rz    = int(stat_dict.get("rushing_rushingattemptsinredzone", stat_dict.get("rushingattemptsinredzone", 0)) or 0)
+            total_td = rec_td + rush_td
+            rz_looks = rec_rz + rush_rz
 
-            total_td   = rec_td + rush_td
-            tdpg       = round(total_td / gp, 3) if gp > 0 else 0
-            tgt_pg     = round(rec_tgt / gp, 1) if gp > 0 else 0
-            att_pg     = round(rush_att / gp, 1) if gp > 0 else 0
-            rec_ypg    = round(rec_yds / gp, 1) if gp > 0 else 0
-            rush_ypg   = round(rush_yds / gp, 1) if gp > 0 else 0
-            rz_looks   = rec_rz_tgt + rush_rz
-            rz_pg      = round(rz_looks / gp, 2) if gp > 0 else 0
-
-            # Position from athlete data
-            athlete    = data.get("athlete", {})
-            pos        = athlete.get("position", {}).get("abbreviation", "WR") if isinstance(athlete.get("position"), dict) else "WR"
+            # Get position
+            try:
+                ath = nfl_get(f"{NFL_BASE}/athletes/{player_id}")
+                pos = ath.get("athlete",{}).get("position",{}).get("abbreviation","WR")
+            except Exception:
+                pos = "WR"
 
             result = {
                 "GP": gp, "pos": pos,
                 "TD": total_td, "rec_TD": rec_td, "rush_TD": rush_td,
-                "TDPG": tdpg,
-                "TGT": rec_tgt, "TGT_PG": tgt_pg,
-                "REC": rec, "REC_YDS": rec_yds, "REC_YPG": rec_ypg,
-                "RUSH_ATT": rush_att, "RUSH_YDS": rush_yds, "RUSH_YPG": rush_ypg,
-                "ATT_PG": att_pg,
-                "RZ_LOOKS": rz_looks, "RZ_PG": rz_pg,
-                "small_sample": gp < 6,
-                "season_used": yr,
+                "TDPG": round(total_td/gp,3) if gp>0 else 0,
+                "TGT": rec_tgt, "TGT_PG": round(rec_tgt/gp,1) if gp>0 else 0,
+                "REC": rec, "REC_YDS": rec_yds, "REC_YPG": round(rec_yds/gp,1) if gp>0 else 0,
+                "RUSH_ATT": rush_att, "RUSH_YDS": rush_yds,
+                "RUSH_YPG": round(rush_yds/gp,1) if gp>0 else 0,
+                "ATT_PG": round(rush_att/gp,1) if gp>0 else 0,
+                "RZ_LOOKS": rz_looks, "RZ_PG": round(rz_looks/gp,2) if gp>0 else 0,
+                "small_sample": gp < 6, "season_used": yr,
             }
             cset(ck, result)
             return result
