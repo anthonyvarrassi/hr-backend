@@ -98,7 +98,8 @@ def savant_pitcher(pid, season):
 
 @app.route("/health")
 def health():
-    return jsonify({"status":"ok","season":SEASON})
+    key_set = bool(os.environ.get("ANTHROPIC_API_KEY",""))
+    return jsonify({"status":"ok","season":SEASON,"anthropic_key_set": key_set})
 
 
 @app.route("/search")
@@ -688,6 +689,8 @@ NFL_TEAMS_MAP = {
 def claude_stats(prompt):
     """Call Claude API for player stats. Returns parsed JSON dict."""
     api_key = os.environ.get("ANTHROPIC_API_KEY","")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set in environment variables")
     r = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
@@ -698,13 +701,15 @@ def claude_stats(prompt):
         timeout=15
     )
     data = r.json()
-    # Handle both content array and direct text response
+    if "error" in data:
+        err = data.get("error", {})
+        raise ValueError(f"Anthropic API error: {err.get('type','')} — {err.get('message','')}")
     if "content" in data and isinstance(data["content"], list):
         txt = data["content"][0].get("text","")
     elif "content" in data and isinstance(data["content"], str):
         txt = data["content"]
     else:
-        raise ValueError(f"Unexpected API response: {list(data.keys())}")
+        raise ValueError(f"Unexpected API response: {data}")
     txt = txt.replace("```json","").replace("```","").strip()
     return json.loads(txt)
 
