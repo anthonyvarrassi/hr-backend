@@ -689,7 +689,7 @@ def search_nfl_player(name):
 
 NFL_LG = {
     "RB_TDPG": 0.45, "WR_TDPG": 0.22, "TE_TDPG": 0.18,
-    "DEF_TDPG": 0.15, "DEF_PTS": 22.5,
+    "DEF_TDPG": 2.20, "DEF_PTS": 22.5,
 }
 
 NFL_TEAMS_MAP = {
