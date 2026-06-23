@@ -102,6 +102,12 @@ def health():
     return jsonify({"status":"ok","season":SEASON,"anthropic_key_set": key_set})
 
 
+@app.route("/clear-cache")
+def clear_cache():
+    CACHE.clear()
+    return jsonify({"status":"cache cleared"})
+
+
 @app.route("/search")
 def search():
     name = request.args.get("name","").strip()
@@ -481,31 +487,60 @@ def get_goalie_stats(pid, season=None):
 
 
 def get_team_defense(team_abbr, season=None):
-    """Pull team defense stats (goals against, shots against)."""
-    if season is None:
-        season = get_nhl_season()
-    ck = f"nhl_team_def:{team_abbr}:{season}"
+    """Pull team defense stats using NHL Stats API with Claude AI fallback."""
+    ck = f"nhl_team_def:{team_abbr}"
     cached = cget(ck)
     if cached: return cached
 
+    # Try NHL Stats API standings first
     try:
         data = nhl_get(f"{NHL}/standings/now")
         standings = data.get("standings", [])
-        team = next((t for t in standings if t.get("teamAbbrev",{}).get("default","") == team_abbr), None)
-        if not team:
-            raise ValueError("Team not found")
-        gp   = int(team.get("gamesPlayed", 1))
-        ga   = int(team.get("goalAgainst", 0))
-        gf   = int(team.get("goalFor", 0))
-        gapg = round(ga/gp, 2) if gp > 0 else 3.0
-        result = {
-            "GP": gp, "GA": ga, "GF": gf,
-            "GAPG": gapg, "live": True,
-        }
-        cset(ck, result)
-        return result
+        team = next((t for t in standings
+                     if t.get("teamAbbrev",{}).get("default","") == team_abbr), None)
+        if team:
+            gp   = int(team.get("gamesPlayed", 1))
+            ga   = int(team.get("goalAgainst", 0))
+            gf   = int(team.get("goalFor", 0))
+            if gp > 0 and ga > 0:
+                gapg = round(ga/gp, 2)
+                result = {"GP": gp, "GA": ga, "GF": gf, "GAPG": gapg, "live": True}
+                cset(ck, result)
+                return result
     except Exception:
-        return {"GAPG": 3.0, "live": False}
+        pass
+
+    # Fallback: use Claude AI with team-specific context
+    try:
+        nhl_teams_full = {
+            "ANA":"Anaheim Ducks","UTA":"Utah Hockey Club","BOS":"Boston Bruins",
+            "BUF":"Buffalo Sabres","CGY":"Calgary Flames","CAR":"Carolina Hurricanes",
+            "CHI":"Chicago Blackhawks","COL":"Colorado Avalanche","CBJ":"Columbus Blue Jackets",
+            "DAL":"Dallas Stars","DET":"Detroit Red Wings","EDM":"Edmonton Oilers",
+            "FLA":"Florida Panthers","LAK":"Los Angeles Kings","MIN":"Minnesota Wild",
+            "MTL":"Montreal Canadiens","NSH":"Nashville Predators","NJD":"New Jersey Devils",
+            "NYI":"New York Islanders","NYR":"New York Rangers","OTT":"Ottawa Senators",
+            "PHI":"Philadelphia Flyers","PIT":"Pittsburgh Penguins","SEA":"Seattle Kraken",
+            "SJS":"San Jose Sharks","STL":"St. Louis Blues","TBL":"Tampa Bay Lightning",
+            "TOR":"Toronto Maple Leafs","VAN":"Vancouver Canucks","VGK":"Vegas Golden Knights",
+            "WSH":"Washington Capitals","WPG":"Winnipeg Jets",
+        }
+        team_name = nhl_teams_full.get(team_abbr, team_abbr)
+        d = claude_stats(
+            f'Return the actual 2024-25 NHL season goals against stats for the {team_name} ({team_abbr}). '
+            f'These must be real stats unique to this team, not league averages. '
+            f'Context: elite defenses (FLA, CAR, DAL) allow ~2.5-2.7 goals/game, '
+            f'average teams allow ~2.8-3.1 goals/game, poor defenses (SJS, ANA, CHI) allow ~3.3-3.8 goals/game. '
+            f'JSON keys: GP(int 82), GA(int total goals against), '
+            f'GAPG(float goals against per game for {team_name} specifically), '
+            f'GF(int total goals for), live(bool false). '
+            f'Return only real 2024-25 stats for {team_name}.'
+        )
+        cset(ck, d)
+        return d
+    except Exception:
+        # Last resort: position-based estimate
+        return {"GAPG": 3.0, "GA": 246, "GF": 246, "GP": 82, "live": False}
 
 
 @app.route("/nhl/search")
@@ -724,19 +759,22 @@ def nfl_search():
 
 @app.route("/nfl/player/<player_id>")
 def nfl_player(player_id):
-    # player_id may be a name slug or ESPN id — use Claude to get stats
     name = request.args.get("name", player_id)
-    ck = f"nfl_player_ai:{name}"
+    ck = f"nfl_player_ai:{name.lower()}"
     cached = cget(ck)
     if cached: return jsonify(cached)
     try:
         d = claude_stats(
-            f'Return 2024 NFL season stats for skill position player with ESPN id "{player_id}" '
-            f'(or best match for name "{name}"). '
-            f'JSON keys: GP(int), pos(str WR/RB/TE), TD(int), rec_TD(int), rush_TD(int), '
-            f'TDPG(float), TGT(int), TGT_PG(float), REC(int), REC_YDS(float), REC_YPG(float), '
-            f'RUSH_ATT(int), RUSH_YDS(float), RUSH_YPG(float), ATT_PG(float), '
-            f'RZ_LOOKS(int), RZ_PG(float), small_sample(bool), season_used(int 2024).'
+            f'Return the actual 2025 NFL regular season stats for "{name}". '
+            f'These must be real stats for this specific player. '
+            f'JSON keys: GP(int), pos(str WR/RB/TE), TD(int total touchdowns), '
+            f'rec_TD(int receiving TDs), rush_TD(int rushing TDs), '
+            f'TDPG(float TDs per game), TGT(int total targets), TGT_PG(float targets per game), '
+            f'REC(int receptions), REC_YDS(float receiving yards), REC_YPG(float rec yards per game), '
+            f'RUSH_ATT(int rush attempts), RUSH_YDS(float rush yards), RUSH_YPG(float rush yards per game), '
+            f'ATT_PG(float rush attempts per game), '
+            f'RZ_LOOKS(int red zone targets+carries), RZ_PG(float red zone looks per game), '
+            f'small_sample(bool false), season_used(int 2024).'
         )
         cset(ck, d)
         return jsonify(d)
@@ -753,9 +791,16 @@ def nfl_defense(team):
     try:
         team_name = NFL_TEAMS_MAP.get(team, team)
         d = claude_stats(
-            f'Return 2024 NFL season defensive stats for the {team_name} ({team}). '
-            f'JSON keys: GP(int), TD_allowed(int), TDPG(float per game), '
-            f'PTS_pg(float points allowed per game), YDS_pg(float yards allowed per game), live(bool false).'
+            f'Return the actual 2025 NFL regular season defensive stats specifically for the {team_name} ({team}). '
+            f'These must be real stats unique to this team, not league averages. '
+            f'For example: a strong defense like SF or BAL allows ~17-20 pts/g, '
+            f'a weak defense like CAR or NE allows ~27-30 pts/g, average teams ~22-24 pts/g. '
+            f'JSON keys: GP(int, 17), TD_allowed(int, total TDs allowed on season), '
+            f'TDPG(float, TDs allowed per game), '
+            f'PTS_pg(float, points allowed per game specific to {team_name}), '
+            f'YDS_pg(float, yards allowed per game specific to {team_name}), '
+            f'live(bool, false). '
+            f'Return only real 2024 stats for {team_name}, not generic values.'
         )
         cset(ck, d)
         return jsonify(d)
@@ -815,18 +860,18 @@ def nba_search():
 @app.route("/nba/player/<player_id>")
 def nba_player(player_id):
     name = request.args.get("name", player_id)
-    ck = f"nba_player_ai:{name}"
+    ck = f"nba_player_ai:{name.lower()}"
     cached = cget(ck)
     if cached: return jsonify(cached)
     try:
         d = claude_stats(
-            f'Return 2025-26 NBA season stats for player with ESPN id "{player_id}" '
-            f'(or best match for name "{name}"). '
-            f'JSON keys: GP(int), pos(str), PPG(float), APG(float), RPG(float), MPG(float), '
+            f'Return the actual 2025-26 NBA season stats for "{name}". '
+            f'These must be real stats specific to this player. '
+            f'JSON keys: GP(int), pos(str), PPG(float 1dp), APG(float), RPG(float), MPG(float), '
             f'FGA(float per game), FGM(float), FG_PCT(float 0-1), '
             f'FG3A(float), FG3M(float), FG3_PCT(float 0-1), '
             f'FTA(float), FTM(float), FT_PCT(float 0-1), '
-            f'TS_PCT(float 0-1), USG_EST(float percent), '
+            f'TS_PCT(float 0-1), USG_EST(float percentage like 28.5), '
             f'small_sample(bool), season_used(int 2026).'
         )
         cset(ck, d)
@@ -844,9 +889,15 @@ def nba_defense(team):
     try:
         team_name = NBA_TEAMS_MAP.get(team, team)
         d = claude_stats(
-            f'Return 2025-26 NBA season defensive stats for the {team_name} ({team}). '
-            f'JSON keys: GP(int), PAPG(float points allowed per game), '
-            f'PACE(float), DEF_RTG(float), live(bool false).'
+            f'Return the actual 2025-26 NBA season defensive stats for the {team_name} ({team}). '
+            f'These must be real stats unique to this specific team, not league averages. '
+            f'Context: elite defenses (OKC, BOS, CLE) allow ~105-108 pts/g, '
+            f'average teams allow ~112-115 pts/g, poor defenses allow ~118-122 pts/g. '
+            f'Fast-paced teams (ATL, SAC) have pace 100+, slow teams (NYK, MEM) have pace 96-98. '
+            f'JSON keys: GP(int), PAPG(float points allowed per game for {team_name} specifically), '
+            f'PACE(float possessions per game for {team_name}), '
+            f'DEF_RTG(float defensive rating for {team_name}), live(bool false). '
+            f'Return only real 2025-26 stats for {team_name}, not generic values.'
         )
         cset(ck, d)
         return jsonify(d)
@@ -857,17 +908,6 @@ def nba_defense(team):
 @app.route("/nba/teams")
 def nba_teams():
     return jsonify(NBA_TEAMS_MAP)
-
-    """Pull NFL skill position stats from ESPN API."""
-    if season is None:
-        season = NFL_SEASON_2025
-    ck = f"nfl_player:{player_id}:{season}"
-    cached = cget(ck)
-    if cached: return cached
-
-    for yr in [season, NFL_SEASON_2025]:
-        try:
-            # Use the correct ESPN statistics endpoint
             data = nfl_get(f"{NFL_BASE}/athletes/{player_id}/statistics/0",
                            {"season": yr, "seasontype": 2})
             cats = (data.get("statistics", {}).get("categories", [])
