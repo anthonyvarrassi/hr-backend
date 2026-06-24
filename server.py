@@ -922,21 +922,25 @@ def nba_player(player_id):
     if cached: return jsonify(cached)
     try:
         d = claude_stats(
-f'Return verified NBA per-game stats for "{name}" as a weighted blend of '
-            f'2024-25 (40% weight) and 2025-26 (60% weight) regular seasons. '
-            f'CRITICAL: Use only stats you are highly confident are accurate. '
-            f'Example verified baselines to check your output against: '
-            f'LeBron James 2024-25: 24.3 PPG, 8.3 APG, 7.8 RPG, 52.3 FG%, 36.0 3P%, 75.3 FT%. '
-            f'Stephen Curry 2024-25: 24.3 PPG, 6.1 APG, 4.4 RPG, 45.2 FG%, 40.0 3P%. '
-            f'Nikola Jokic 2024-25: 29.6 PPG, 12.7 RPG, 10.2 APG, 58.3 FG%. '
-            f'If you are not confident in a player stat, use league average for that stat. '
-            f'JSON keys: GP(int), pos(str), PPG(float 1dp), APG(float), RPG(float), MPG(float), '
+        d = claude_stats(
+            f'Return the real 2025-26 NBA regular season per-game stats for "{name}". '
+            f'Use only verified accurate stats. Do not guess or inflate numbers. '
+            f'Known 2025-26 verified stats: LeBron James=20.9 PPG/7.8 RPG/8.3 APG, '
+            f'Stephen Curry=22.5 PPG, Nikola Jokic=29.6 PPG, Luka Doncic=28.1 PPG, '
+            f'Giannis Antetokounmpo=30.4 PPG, Jayson Tatum=26.9 PPG, '
+            f'Kevin Durant=26.1 PPG, Joel Embiid=24.1 PPG. '
+            f'If you are not certain of a specific stat value, use the NBA league average instead: '
+            f'PPG=14.5, FGA=11.0, FTA=2.8, FG_PCT=0.467, TS_PCT=0.582. '
+            f'JSON keys: GP(int), pos(str), '
+            f'PPG(float 1 decimal place, verified 2025-26 value), '
+            f'APG(float), RPG(float), MPG(float), '
             f'FGA(float per game), FGM(float), FG_PCT(float 0-1), '
             f'FG3A(float), FG3M(float), FG3_PCT(float 0-1), '
             f'FTA(float), FTM(float), FT_PCT(float 0-1), '
-            f'TS_PCT(float 0-1), USG_EST(float percentage), '
-            f'seasons(str "2024-25+2025-26"), '
+            f'TS_PCT(float 0-1), USG_EST(float percentage like 28.5), '
+            f'seasons(str "2025-26"), '
             f'small_sample(bool, true only if GP < 20), season_used(int 2026).'
+        )
         )
         cset(ck, d)
         return jsonify(d)
