@@ -403,87 +403,143 @@ def search_nhl_player(name):
 
 
 def get_skater_stats(pid, season=None):
-    """Pull skater stats from NHL Stats API."""
-    if season is None:
-        season = NHL_SEASON_2526
-    ck = f"nhl_skater:{pid}:{season}"
+    """Pull skater stats from NHL Stats API — blends 2024-25 and 2025-26."""
+    ck = f"nhl_skater_blend:{pid}"
     cached = cget(ck)
     if cached: return cached
 
-    for sid in [season, NHL_SEASON_2526, NHL_SEASON_2425]:
+    def fetch_season(sid):
         try:
             data = nhl_get("https://api.nhle.com/stats/rest/en/skater/summary", {
                 "limit": 1, "start": 0,
                 "cayenneExp": f"playerId={pid} and seasonId={sid} and gameTypeId=2"
             })
             rows = data.get("data", [])
-            if not rows:
-                continue
+            if not rows: return None
             s = rows[0]
-            gp       = int(s.get("gamesPlayed", 0))
-            goals    = int(s.get("goals", 0))
-            assists  = int(s.get("assists", 0))
-            pts      = int(s.get("points", 0))
-            shots    = int(s.get("shots", 0))
-            ppg      = int(s.get("ppGoals", 0))
-            ppp      = int(s.get("ppPoints", 0))
-            toi_pg   = s.get("timeOnIcePerGame", "0:00")
-            plus_m   = int(s.get("plusMinus", 0))
-            gpg      = round(goals/gp, 4)        if gp > 0 else 0
-            spg      = round(shots/gp, 2)        if gp > 0 else 0
-            sh_pct   = round(goals/shots*100, 1) if shots > 0 else 0
-            ppgpg    = round(ppg/gp, 3)          if gp > 0 else 0
-            result = {
-                "GP": gp, "G": goals, "A": assists, "PTS": pts,
-                "S": shots, "S_pct": sh_pct, "PPG": ppg, "PPP": ppp,
-                "GPG": gpg, "SPG": spg, "PPGPG": ppgpg,
-                "TOI": toi_pg, "plusMinus": plus_m,
-                "small_sample": gp < 10,
-                "season_used": sid,
-            }
-            cset(ck, result)
-            return result
+            gp = int(s.get("gamesPlayed", 0))
+            if gp == 0: return None
+            goals  = int(s.get("goals", 0))
+            assists= int(s.get("assists", 0))
+            shots  = int(s.get("shots", 0))
+            ppg    = int(s.get("ppGoals", 0))
+            ppp    = int(s.get("ppPoints", 0))
+            toi    = s.get("timeOnIcePerGame", "0:00")
+            plus_m = int(s.get("plusMinus", 0))
+            return {"gp":gp,"goals":goals,"assists":assists,"shots":shots,
+                    "ppg":ppg,"ppp":ppp,"toi":toi,"plus_m":plus_m}
         except Exception:
-            continue
-    raise ValueError(f"No NHL skater stats found for player {pid}")
+            return None
+
+    s1 = fetch_season(NHL_SEASON_2526)  # 2025-26 (current)
+    s2 = fetch_season(NHL_SEASON_2425)  # 2024-25 (prior)
+
+    if not s1 and not s2:
+        raise ValueError(f"No NHL skater stats found for player {pid}")
+
+    # Blend: 60% current season, 40% prior season
+    # If only one season available, use it fully
+    if s1 and s2:
+        w1, w2 = 0.60, 0.40
+        gp      = s1["gp"]
+        goals   = round(s1["goals"]*w1 + s2["goals"]/s2["gp"]*s1["gp"]*w2)
+        assists = round(s1["assists"]*w1 + s2["assists"]/s2["gp"]*s1["gp"]*w2)
+        shots   = round(s1["shots"]*w1 + s2["shots"]/s2["gp"]*s1["gp"]*w2)
+        ppg     = round(s1["ppg"]*w1 + s2["ppg"]/s2["gp"]*s1["gp"]*w2)
+        ppp     = round(s1["ppp"]*w1 + s2["ppp"]/s2["gp"]*s1["gp"]*w2)
+        toi     = s1["toi"]
+        plus_m  = round(s1["plus_m"]*w1 + s2["plus_m"]*w2)
+        seasons = "2024-25 + 2025-26"
+    elif s1:
+        gp,goals,assists,shots,ppg,ppp,toi,plus_m = (
+            s1["gp"],s1["goals"],s1["assists"],s1["shots"],
+            s1["ppg"],s1["ppp"],s1["toi"],s1["plus_m"])
+        seasons = "2025-26"
+    else:
+        gp,goals,assists,shots,ppg,ppp,toi,plus_m = (
+            s2["gp"],s2["goals"],s2["assists"],s2["shots"],
+            s2["ppg"],s2["ppp"],s2["toi"],s2["plus_m"])
+        seasons = "2024-25"
+
+    result = {
+        "GP": gp, "G": goals, "A": assists, "PTS": goals+assists,
+        "S": shots,
+        "S_pct": round(goals/shots*100,1) if shots>0 else 0,
+        "PPG": ppg, "PPP": ppp,
+        "GPG": round(goals/gp,4) if gp>0 else 0,
+        "SPG": round(shots/gp,2) if gp>0 else 0,
+        "PPGPG": round(ppg/gp,3) if gp>0 else 0,
+        "TOI": toi, "plusMinus": plus_m,
+        "small_sample": gp < 10,
+        "seasons": seasons,
+        "season_used": NHL_SEASON_2526,
+    }
+    cset(ck, result)
+    return result
 
 
 def get_goalie_stats(pid, season=None):
-    """Pull goalie stats from NHL Stats API."""
-    if season is None:
-        season = NHL_SEASON_2526
-    ck = f"nhl_goalie:{pid}:{season}"
+    """Pull goalie stats from NHL Stats API — blends 2024-25 and 2025-26."""
+    ck = f"nhl_goalie_blend:{pid}"
     cached = cget(ck)
     if cached: return cached
 
-    for sid in [season, NHL_SEASON_2526, NHL_SEASON_2425]:
+    def fetch_goalie_season(sid):
         try:
             data = nhl_get("https://api.nhle.com/stats/rest/en/goalie/summary", {
                 "limit": 1, "start": 0,
                 "cayenneExp": f"playerId={pid} and seasonId={sid} and gameTypeId=2"
             })
             rows = data.get("data", [])
-            if not rows:
-                continue
-            s    = rows[0]
-            gp   = int(s.get("gamesPlayed", 0))
-            wins = int(s.get("wins", 0))
-            gaa  = round(float(s.get("goalsAgainstAverage", 0) or 0), 2)
-            sv   = round(float(s.get("savePct", 0) or 0), 3)
-            sa   = int(s.get("shotsAgainst", 0))
-            ga   = int(s.get("goalsAgainst", 0))
-            so   = int(s.get("shutouts", 0))
-            sapg = round(sa/gp, 1) if gp > 0 else 0
-            result = {
-                "GP": gp, "W": wins, "GAA": gaa, "SV_PCT": sv,
-                "SA": sa, "GA": ga, "SO": so, "SAPG": sapg,
-                "small_sample": gp < 5,
+            if not rows: return None
+            s  = rows[0]
+            gp = int(s.get("gamesPlayed", 0))
+            if gp == 0: return None
+            return {
+                "gp":   gp,
+                "wins": int(s.get("wins", 0)),
+                "gaa":  round(float(s.get("goalsAgainstAverage", 0) or 0), 2),
+                "sv":   round(float(s.get("savePct", 0) or 0), 3),
+                "sa":   int(s.get("shotsAgainst", 0)),
+                "ga":   int(s.get("goalsAgainst", 0)),
+                "so":   int(s.get("shutouts", 0)),
             }
-            cset(ck, result)
-            return result
         except Exception:
-            continue
-    raise ValueError(f"No NHL goalie stats found for player {pid}")
+            return None
+
+    s1 = fetch_goalie_season(NHL_SEASON_2526)
+    s2 = fetch_goalie_season(NHL_SEASON_2425)
+
+    if not s1 and not s2:
+        raise ValueError(f"No NHL goalie stats found for player {pid}")
+
+    if s1 and s2:
+        # Weighted average: 60% current, 40% prior
+        w1, w2 = 0.60, 0.40
+        gp   = s1["gp"]
+        gaa  = round(s1["gaa"]*w1 + s2["gaa"]*w2, 2)
+        sv   = round(s1["sv"]*w1  + s2["sv"]*w2,  3)
+        sa   = round(s1["sa"]*w1  + s2["sa"]/s2["gp"]*s1["gp"]*w2)
+        ga   = round(s1["ga"]*w1  + s2["ga"]/s2["gp"]*s1["gp"]*w2)
+        wins = s1["wins"]
+        so   = s1["so"]
+        seasons = "2024-25 + 2025-26"
+    elif s1:
+        gp,wins,gaa,sv,sa,ga,so = s1["gp"],s1["wins"],s1["gaa"],s1["sv"],s1["sa"],s1["ga"],s1["so"]
+        seasons = "2025-26"
+    else:
+        gp,wins,gaa,sv,sa,ga,so = s2["gp"],s2["wins"],s2["gaa"],s2["sv"],s2["sa"],s2["ga"],s2["so"]
+        seasons = "2024-25"
+
+    result = {
+        "GP": gp, "W": wins, "GAA": gaa, "SV_PCT": sv,
+        "SA": sa, "GA": ga, "SO": so,
+        "SAPG": round(sa/gp,1) if gp>0 else 0,
+        "small_sample": gp < 5,
+        "seasons": seasons,
+    }
+    cset(ck, result)
+    return result
 
 
 def get_team_defense(team_abbr, season=None):
@@ -765,16 +821,17 @@ def nfl_player(player_id):
     if cached: return jsonify(cached)
     try:
         d = claude_stats(
-            f'Return the actual 2025 NFL regular season stats for "{name}". '
-            f'These must be real stats for this specific player. '
-            f'JSON keys: GP(int), pos(str WR/RB/TE), TD(int total touchdowns), '
-            f'rec_TD(int receiving TDs), rush_TD(int rushing TDs), '
-            f'TDPG(float TDs per game), TGT(int total targets), TGT_PG(float targets per game), '
-            f'REC(int receptions), REC_YDS(float receiving yards), REC_YPG(float rec yards per game), '
-            f'RUSH_ATT(int rush attempts), RUSH_YDS(float rush yards), RUSH_YPG(float rush yards per game), '
-            f'ATT_PG(float rush attempts per game), '
-            f'RZ_LOOKS(int red zone targets+carries), RZ_PG(float red zone looks per game), '
-            f'small_sample(bool false), season_used(int 2025).'
+            f'Return a weighted blend of 2024 and 2025 NFL regular season stats for "{name}" '
+            f'(60% weight on 2025, 40% weight on 2024). '
+            f'These must be real blended stats for this specific player. '
+            f'JSON keys: GP(int, use 2025 GP), pos(str WR/RB/TE), TD(int 2025 touchdowns), '
+            f'rec_TD(int receiving TDs 2025), rush_TD(int rushing TDs 2025), '
+            f'TDPG(float blended TDs per game), TGT(int targets 2025), TGT_PG(float blended targets/game), '
+            f'REC(int receptions 2025), REC_YDS(float 2025 receiving yards), REC_YPG(float blended rec yds/game), '
+            f'RUSH_ATT(int 2025 rush attempts), RUSH_YDS(float 2025 rush yards), RUSH_YPG(float blended rush yds/game), '
+            f'ATT_PG(float blended rush attempts/game), '
+            f'RZ_LOOKS(int 2025 red zone looks), RZ_PG(float blended red zone looks/game), '
+            f'seasons(str "2024+2025"), small_sample(bool false), season_used(int 2025).'
         )
         cset(ck, d)
         return jsonify(d)
@@ -865,14 +922,21 @@ def nba_player(player_id):
     if cached: return jsonify(cached)
     try:
         d = claude_stats(
-            f'Return the actual 2025-26 NBA season stats for "{name}". '
-            f'These must be real stats specific to this player. '
+f'Return verified NBA per-game stats for "{name}" as a weighted blend of '
+            f'2024-25 (40% weight) and 2025-26 (60% weight) regular seasons. '
+            f'CRITICAL: Use only stats you are highly confident are accurate. '
+            f'Example verified baselines to check your output against: '
+            f'LeBron James 2024-25: 24.3 PPG, 8.3 APG, 7.8 RPG, 52.3 FG%, 36.0 3P%, 75.3 FT%. '
+            f'Stephen Curry 2024-25: 24.3 PPG, 6.1 APG, 4.4 RPG, 45.2 FG%, 40.0 3P%. '
+            f'Nikola Jokic 2024-25: 29.6 PPG, 12.7 RPG, 10.2 APG, 58.3 FG%. '
+            f'If you are not confident in a player stat, use league average for that stat. '
             f'JSON keys: GP(int), pos(str), PPG(float 1dp), APG(float), RPG(float), MPG(float), '
             f'FGA(float per game), FGM(float), FG_PCT(float 0-1), '
             f'FG3A(float), FG3M(float), FG3_PCT(float 0-1), '
             f'FTA(float), FTM(float), FT_PCT(float 0-1), '
-            f'TS_PCT(float 0-1), USG_EST(float percentage like 28.5), '
-            f'small_sample(bool), season_used(int 2026).'
+            f'TS_PCT(float 0-1), USG_EST(float percentage), '
+            f'seasons(str "2024-25+2025-26"), '
+            f'small_sample(bool, true only if GP < 20), season_used(int 2026).'
         )
         cset(ck, d)
         return jsonify(d)
