@@ -922,7 +922,6 @@ def nba_player(player_id):
     if cached: return jsonify(cached)
     try:
         d = claude_stats(
-        d = claude_stats(
             f'Return the real 2025-26 NBA regular season per-game stats for "{name}". '
             f'Use only verified accurate stats. Do not guess or inflate numbers. '
             f'Known 2025-26 verified stats: LeBron James=20.9 PPG/7.8 RPG/8.3 APG, '
@@ -940,7 +939,6 @@ def nba_player(player_id):
             f'TS_PCT(float 0-1), USG_EST(float percentage like 28.5), '
             f'seasons(str "2025-26"), '
             f'small_sample(bool, true only if GP < 20), season_used(int 2026).'
-        )
         )
         cset(ck, d)
         return jsonify(d)
